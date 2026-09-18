@@ -101,7 +101,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="brand"><span>安</span><div><b>安巡智控</b><small>GitHub Pages · 瀏覽器本機 AI</small></div></div><div className={`status ${workerState.state}`}><BrainCircuit size={17} />{workerState.message}</div></header>
+    <header><div className="brand"><span>安</span><div><b>安巡智控</b><small>GitHub Pages · 瀏覽器本機 AI · v1.1</small></div></div><div className={`status ${workerState.state}`}><BrainCircuit size={17} />{workerState.message}</div></header>
     {(workerState.state === "loading" || workerState.state === "analyzing") && <div className="progress"><span style={{ width: `${Math.max(4, workerState.progress)}%` }} /></div>}
     <div className="shell">
       <nav>{[["audit", Plus, "建立稽核"], ["tracking", ClipboardCheck, "缺失追蹤"], ["dashboard", BarChart3, "管理看板"]].map(([key, Icon, label]: any) => <button className={tab === key ? "active" : ""} onClick={() => setTab(key)} key={key}><Icon size={18} />{label}</button>)}<div className="nav-stats"><small>未結案</small><strong>{stats.open}</strong><small>逾期</small><strong className="danger">{stats.overdue}</strong></div></nav>
@@ -118,10 +118,18 @@ export default function App() {
 
 function normalizeReports(raw: any[]): Report[] {
   if (!Array.isArray(raw)) throw new Error("invalid reports");
-  return raw.map((r, idx) => ({ photoIndex: idx + 1, assessment: String(r.assessment || "請人工確認"), issues: CATEGORIES.map((category) => {
-    const found = Array.isArray(r.issues) ? r.issues.find((x: any) => String(x.category).includes(category === "職業安全" ? "職業" : category)) : null;
-    return { id: crypto.randomUUID(), photoIndex: idx + 1, category, riskLevel: normalizeRisk(found?.riskLevel), description: String(found?.description || "無"), standardReference: String(found?.standardReference || "無"), recommendation: String(found?.recommendation || "無"), assignee: "", dueDate: "", status: "已上報" };
-  }) }));
+  const placeholders = /80\s*字|整體評估|請填|請描述|或無|高風險\s*[|｜/]\s*中風險|法規或內部|對照片現況|具體(?:可見)?(?:判定|缺失|改善|動作)/;
+  return raw.map((r, idx) => {
+    const assessment = String(r.assessment || "").trim();
+    if (assessment.length < 8 || placeholders.test(assessment)) throw new Error("AI 評估內容未通過品質檢查");
+    return { photoIndex: idx + 1, assessment, issues: CATEGORIES.map((category) => {
+      const found = Array.isArray(r.issues) ? r.issues.find((x: any) => String(x.category).includes(category === "職業安全" ? "職業" : category)) : null;
+      const description = String(found?.description || "無").trim();
+      const recommendation = String(found?.recommendation || "無").trim();
+      if (placeholders.test(description) || placeholders.test(recommendation)) throw new Error("AI 改善內容未通過品質檢查");
+      return { id: crypto.randomUUID(), photoIndex: idx + 1, category, riskLevel: normalizeRisk(found?.riskLevel), description, standardReference: String(found?.standardReference || "無"), recommendation, assignee: "", dueDate: "", status: "已上報" };
+    }) };
+  });
 }
 function normalizeRisk(value: unknown): Risk { const text = String(value || "無"); return text.includes("高") ? "高風險" : text.includes("中") ? "中風險" : text.includes("低") ? "低風險" : "無"; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="field"><b>{label}</b>{children}</label>; }
