@@ -1,54 +1,47 @@
-# 安巡智控｜GitHub Pages 瀏覽器 AI 版
+# 安巡智控｜公司內網 AI 版 v2.0
 
-此版本不使用後端伺服器、API Key、公司帳號或 Ollama。網站可部署在 GitHub Pages，AI 模型、照片辨識與稽核資料都在使用者瀏覽器中執行。
+製造業現場安全巡檢與缺失閉環管理系統。AI、照片與稽核資料全部留在公司內網，不使用外部 AI API，也不要求使用者登入外部帳號。
 
-## 運作方式
+## 架構
 
-- 網站程式：GitHub Pages 靜態託管。
-- 視覺模型：`onnx-community/LFM2.5-VL-450M-ONNX`。
-- 執行引擎：Transformers.js 4 + WebGPU。
-- 照片：壓縮後直接交給瀏覽器 Web Worker，不上傳到 GitHub 或外部 API。
-- 紀錄：保存在目前瀏覽器 IndexedDB，可匯出 CSV。
-- 模型：第一次使用時由 Hugging Face 官方模型倉庫下載，之後由瀏覽器快取。
-- 輸出品質：照片逐張分析；若模型輸出空泛文字或照抄欄位說明，系統會自動重試一次，仍不合格則不建立錯誤紀錄。
-- v1.2：整體結構輸出失敗時，自動切換為 6S、TPM、職業安全、消防四類分項辨識；無法可靠解析的類別會標示「待確認」，不再讓整份稽核失敗。
+- React + Vite：巡檢、辨識結果、缺失追蹤與管理看板。
+- FastAPI：統一處理 AI 推論與資料存取。
+- Ollama + `qwen3-vl:4b`：內網圖片辨識，可用 CPU 或 NVIDIA GPU。
+- PostgreSQL：多台電腦共用的稽核資料庫。
+- Nginx：提供網站並反向代理內網 API。
+- Docker Compose：一鍵啟動全部服務。
 
-完整模型權重不放在 GitHub repository，因模型由多個大型檔案組成，不適合 GitHub 一般程式碼儲存。若公司封鎖 Hugging Face，需將模型檔鏡像到公司允許的靜態檔案站，再修改 worker 的模型路徑。
+## 快速啟動
 
-## 電腦需求
+```bash
+cp .env.example .env
+# 請先修改 .env 的 POSTGRES_PASSWORD
+docker compose up -d --build
+```
 
-- 最新版 Chrome 或 Microsoft Edge。
-- 必須支援 WebGPU並開啟硬體加速。
-- 建議至少 16 GB RAM、獨立顯示卡 4 GB VRAM以上。
-- 手機瀏覽器、舊電腦及未支援 WebGPU的環境不建議使用。
+開啟 `http://伺服器IP:8080`。第一次啟動會自動下載 AI 模型，完成前健康檢查會顯示 `ready: false`。
 
-## 本機開發
+NVIDIA GPU：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+詳細步驟請見 [部署內網版.md](./部署內網版.md)。
+
+## 開發與驗證
 
 ```bash
 pnpm install
-pnpm run dev
+pnpm build
+python -m compileall -q server/app
+docker compose config --quiet
 ```
 
-## 建置
+每次推送到 `main`，GitHub Actions 只做自動建置驗證，不會把內網版部署到公開 GitHub Pages。公司伺服器可執行 `scripts/deploy.ps1` 或 `scripts/deploy.sh` 自動取得更新並重新建置。
 
-```bash
-pnpm run build
-```
+## 安全界線
 
-輸出位於 `dist/`。
-
-## 部署到 GitHub Pages
-
-1. 建立 GitHub repository並上傳整個專案。
-2. Repository → Settings → Pages。
-3. Source 選擇 `GitHub Actions`。
-4. Push 到 `main` 後，`.github/workflows/deploy.yml` 會自動建置與部署。
-
-Vite 已設定相對路徑，因此可部署到 `https://帳號.github.io/repository名稱/`。
-
-## 資料限制
-
-- IndexedDB 資料只存在目前瀏覽器與目前電腦，不會跨裝置同步。
-- 清除網站資料、無痕模式結束或瀏覽器重設後，資料可能消失。
-- 請定期匯出 CSV；若需要跨電腦共用、集中備份或不可竄改履歷，應使用內網伺服器版本。
-- 450M 級本機模型的判斷能力低於大型雲端模型，所有高風險、法規依據與銷項都必須由合格人員複核。
+- 服務應僅開放給公司 LAN／VPN，並由 IT 設定防火牆與 HTTPS。
+- AI 結果是巡檢輔助；高風險、法規與銷項須由合格人員複核。
+- 請定期備份 PostgreSQL volume。

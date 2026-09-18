@@ -1,43 +1,28 @@
 import type { Audit } from "./types";
 
-const DB_NAME = "safety-ai-browser";
-const STORE = "audits";
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`./api${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init?.headers },
   });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `伺服器錯誤 (${response.status})`);
+  }
+  return response.json();
 }
 
 export async function listAudits(): Promise<Audit[]> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE, "readonly").objectStore(STORE).getAll();
-    request.onsuccess = () => resolve((request.result as Audit[]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-    request.onerror = () => reject(request.error);
-  });
+  return api<Audit[]>("/audits");
 }
 
 export async function saveAudit(audit: Audit): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(audit);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+  await api(`/audits/${encodeURIComponent(audit.id)}`, {
+    method: "PUT",
+    body: JSON.stringify(audit),
   });
 }
 
 export async function clearAudits(): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).clear();
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  await api("/audits", { method: "DELETE" });
 }

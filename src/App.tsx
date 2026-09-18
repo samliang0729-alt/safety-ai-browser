@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, BarChart3, BrainCircuit, Camera, CheckCircle2, ClipboardCheck, Database, Download, LoaderCircle, MonitorCog, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, BarChart3, BrainCircuit, Camera, CheckCircle2, ClipboardCheck, Database, Download, LoaderCircle, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { clearAudits, listAudits, saveAudit } from "./db";
 import type { Audit, Issue, IssueStatus, Report, Risk } from "./types";
 
@@ -14,7 +14,7 @@ type WorkerState = { state: "idle" | "loading" | "ready" | "analyzing" | "error"
 export default function App() {
   const [tab, setTab] = useState<"audit" | "tracking" | "dashboard">("audit");
   const [audits, setAudits] = useState<Audit[]>([]);
-  const [workerState, setWorkerState] = useState<WorkerState>({ state: "idle", message: "尚未載入模型", progress: 0, model: "LFM2.5-VL-450M" });
+  const [workerState, setWorkerState] = useState<WorkerState>({ state: "idle", message: "正在確認內網 AI", progress: 0, model: "qwen3-vl:4b" });
   const [auditorName, setAuditorName] = useState("");
   const [employeeId, setEmployeeId] = useState("");
   const [workflow, setWorkflow] = useState(WORKFLOWS[0]);
@@ -26,21 +26,12 @@ export default function App() {
   const [result, setResult] = useState<{ overallSummary: string; reports: Report[] } | null>(null);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
-    void listAudits().then(setAudits);
+    void listAudits().then(setAudits).catch(() => setError("無法連線公司資料庫，請確認內網伺服器已啟動"));
     setAuditorName(localStorage.getItem("safety-auditor-name") || "");
     setEmployeeId(localStorage.getItem("safety-employee-id") || "");
-    const worker = new Worker(new URL("./ai.worker.ts", import.meta.url), { type: "module" });
-    workerRef.current = worker;
-    worker.onmessage = async ({ data }) => {
-      if (data.type === "status") setWorkerState((old) => ({ ...old, state: old.state === "analyzing" ? "analyzing" : "loading", message: data.message, progress: data.progress || 0 }));
-      if (data.type === "ready") setWorkerState({ state: "ready", message: "模型已快取，可離線辨識", progress: 100, model: data.model });
-      if (data.type === "error") { setWorkerState((old) => ({ ...old, state: "error", message: data.message })); setError(data.message); }
-      if (data.type === "result") await finishAudit(data.result, data.model);
-    };
-    return () => worker.terminate();
+    void loadModel();
   }, []);
 
   const issues = useMemo(() => audits.flatMap((audit) => audit.reports.flatMap((report) => report.issues.map((issue) => ({ ...issue, audit })))).filter((x) => x.description !== "無"), [audits]);
@@ -50,12 +41,18 @@ export default function App() {
     high: issues.filter((x) => x.riskLevel === "高風險" && x.status !== "已銷項").length,
     overdue: issues.filter((x) => x.status !== "已銷項" && x.dueDate && x.dueDate < today()).length,
   }), [issues]);
-  const webGpu = "gpu" in navigator;
-
-  function loadModel() {
-    if (!webGpu) return setError("此瀏覽器不支援 WebGPU，請使用最新版 Chrome 或 Edge，並確認硬體加速已開啟。");
-    setError(""); setWorkerState((old) => ({ ...old, state: "loading", message: "準備下載模型", progress: 0 }));
-    workerRef.current?.postMessage({ type: "load" });
+  async function loadModel() {
+    setError(""); setWorkerState((old) => ({ ...old, state: "loading", message: "正在連線內網 AI", progress: 30 }));
+    try {
+      const response = await fetch("./api/health");
+      if (!response.ok) throw new Error();
+      const health = await response.json();
+      if (!health.ready) throw new Error();
+      setWorkerState({ state: "ready", message: "內網 AI 已連線", progress: 100, model: health.model || "qwen3-vl:4b" });
+    } catch {
+      setWorkerState((old) => ({ ...old, state: "error", message: "內網 AI 尚未就緒", progress: 0 }));
+      setError("無法連線公司內網 AI，請確認伺服器與模型已啟動");
+    }
   }
 
   async function addImages(files: FileList | null) {
@@ -64,22 +61,30 @@ export default function App() {
     catch { setError("圖片無法讀取，請改用 JPG、PNG 或 WebP"); }
   }
 
-  function analyze() {
-    if (workerState.state !== "ready") return setError("請先下載並載入本機 AI 模型");
+  async function analyze() {
+    if (workerState.state !== "ready") return setError("請先連線公司內網 AI");
     if (!auditorName.trim() || !employeeId.trim() || !locations.length || !responsible.trim() || !images.length) return setError("請完成巡檢人員、工號、地點、負責人與照片欄位");
     setError(""); setResult(null);
     localStorage.setItem("safety-auditor-name", auditorName.trim()); localStorage.setItem("safety-employee-id", employeeId.trim());
-    setWorkerState((old) => ({ ...old, state: "analyzing", message: "本機 AI 開始辨識", progress: 0 }));
+    setWorkerState((old) => ({ ...old, state: "analyzing", message: "內網 AI 正在辨識", progress: 20 }));
     const context = `流程:${workflow}；地點:${locations.join("、")}；稽核焦點:${focus}；現場補充:${notes || "無"}`;
-    workerRef.current?.postMessage({ type: "analyze", images, context });
+    try {
+      const response = await fetch("./api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ images, context }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "辨識失敗");
+      await finishAudit(data, data.model || workerState.model);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "內網 AI 辨識失敗";
+      setError(message); setWorkerState((old) => ({ ...old, state: "ready", message: "內網 AI 已連線", progress: 100 }));
+    }
   }
 
   async function finishAudit(raw: any, model: string) {
     try {
       const reports = normalizeReports(raw.reports);
-      const audit: Audit = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), auditorName: auditorName.trim(), employeeId: employeeId.trim(), workflowType: workflow, locations, responsiblePerson: responsible.trim(), auditFocus: focus, notes, summary: String(raw.overallSummary || "本機辨識完成"), images, reports, model };
+      const audit: Audit = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), auditorName: auditorName.trim(), employeeId: employeeId.trim(), workflowType: workflow, locations, responsiblePerson: responsible.trim(), auditFocus: focus, notes, summary: String(raw.overallSummary || "內網 AI 辨識完成"), images, reports, model };
       await saveAudit(audit); setAudits((old) => [audit, ...old]); setResult({ overallSummary: audit.summary, reports });
-      setWorkerState((old) => ({ ...old, state: "ready", message: "模型已快取，可離線辨識", progress: 100 }));
+      setWorkerState((old) => ({ ...old, state: "ready", message: "內網 AI 已連線", progress: 100 }));
     } catch { setError("模型回傳格式不完整，請換一張較清楚的照片重試"); setWorkerState((old) => ({ ...old, state: "ready", message: "模型已就緒", progress: 100 })); }
   }
 
@@ -89,7 +94,7 @@ export default function App() {
   }
 
   async function removeAll() {
-    if (!confirm("確定刪除這台電腦瀏覽器內的全部稽核紀錄？此動作無法復原。")) return;
+    if (!confirm("確定刪除公司資料庫內的全部稽核紀錄？此動作無法復原。")) return;
     await clearAudits(); setAudits([]); setResult(null);
   }
 
@@ -101,16 +106,15 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="brand"><span>安</span><div><b>安巡智控</b><small>GitHub Pages · 瀏覽器本機 AI · v1.2</small></div></div><div className={`status ${workerState.state}`}><BrainCircuit size={17} />{workerState.message}</div></header>
+    <header><div className="brand"><span>安</span><div><b>安巡智控</b><small>公司內網 · 集中式 AI · v2.0</small></div></div><div className={`status ${workerState.state}`}><BrainCircuit size={17} />{workerState.message}</div></header>
     {(workerState.state === "loading" || workerState.state === "analyzing") && <div className="progress"><span style={{ width: `${Math.max(4, workerState.progress)}%` }} /></div>}
     <div className="shell">
       <nav>{[["audit", Plus, "建立稽核"], ["tracking", ClipboardCheck, "缺失追蹤"], ["dashboard", BarChart3, "管理看板"]].map(([key, Icon, label]: any) => <button className={tab === key ? "active" : ""} onClick={() => setTab(key)} key={key}><Icon size={18} />{label}</button>)}<div className="nav-stats"><small>未結案</small><strong>{stats.open}</strong><small>逾期</small><strong className="danger">{stats.overdue}</strong></div></nav>
       <section className="content">
         {error && <div className="error"><AlertTriangle size={18} />{error}</div>}
-        {!webGpu && <div className="warning"><MonitorCog /><div><b>目前瀏覽器未啟用 WebGPU</b><p>請使用最新版 Chrome／Edge 並開啟硬體加速。本系統不會把照片傳出電腦。</p></div></div>}
-        {tab === "audit" && <div className="audit-grid"><section className="panel form"><Title step="01" text="巡檢資料" /><div className="two"><Field label="巡檢人員"><input value={auditorName} onChange={(e) => setAuditorName(e.target.value)} placeholder="姓名" /></Field><Field label="工號"><input value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} placeholder="員工編號" /></Field></div><Field label="管理流程"><select value={workflow} onChange={(e) => setWorkflow(e.target.value)}>{WORKFLOWS.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="地點區域"><div className="chips">{LOCATIONS.map((x) => <button className={locations.includes(x) ? "selected" : ""} onClick={() => setLocations((old) => old.includes(x) ? old.filter((v) => v !== x) : [...old, x])} key={x}>{x}</button>)}</div></Field><Field label="區域負責人"><input value={responsible} onChange={(e) => setResponsible(e.target.value)} placeholder="姓名／單位" /></Field><Field label="稽核焦點"><select value={focus} onChange={(e) => setFocus(e.target.value)}>{FOCUSES.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="現場補充"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="設備編號、作業狀態等" /></Field><Title step="02" text="現場照片" /><input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => void addImages(e.target.files)} /><button className="upload" onClick={() => fileRef.current?.click()} disabled={images.length >= 4}><Camera /><b>拍照或選擇照片</b><small>最多 4 張；壓縮後僅在本機分析</small></button>{images.length > 0 && <div className="thumbs">{images.map((src, i) => <div key={i}><img src={src} alt={`照片 ${i + 1}`} /><button onClick={() => setImages((old) => old.filter((_, x) => x !== i))}><Trash2 size={15} /></button></div>)}</div>}<button className="primary" onClick={workerState.state === "idle" || workerState.state === "error" ? loadModel : analyze} disabled={!webGpu || workerState.state === "loading" || workerState.state === "analyzing"}>{workerState.state === "loading" || workerState.state === "analyzing" ? <LoaderCircle className="spin" /> : <BrainCircuit />}{workerState.state === "idle" || workerState.state === "error" ? "下載本機 AI 模型" : "開始本機 AI 辨識"}</button></section><section className="panel result">{result ? <Result result={result} /> : <Empty state={workerState.state} />}</section></div>}
+        {tab === "audit" && <div className="audit-grid"><section className="panel form"><Title step="01" text="巡檢資料" /><div className="two"><Field label="巡檢人員"><input value={auditorName} onChange={(e) => setAuditorName(e.target.value)} placeholder="姓名" /></Field><Field label="工號"><input value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} placeholder="員工編號" /></Field></div><Field label="管理流程"><select value={workflow} onChange={(e) => setWorkflow(e.target.value)}>{WORKFLOWS.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="地點區域"><div className="chips">{LOCATIONS.map((x) => <button className={locations.includes(x) ? "selected" : ""} onClick={() => setLocations((old) => old.includes(x) ? old.filter((v) => v !== x) : [...old, x])} key={x}>{x}</button>)}</div></Field><Field label="區域負責人"><input value={responsible} onChange={(e) => setResponsible(e.target.value)} placeholder="姓名／單位" /></Field><Field label="稽核焦點"><select value={focus} onChange={(e) => setFocus(e.target.value)}>{FOCUSES.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="現場補充"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="設備編號、作業狀態等" /></Field><Title step="02" text="現場照片" /><input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => void addImages(e.target.files)} /><button className="upload" onClick={() => fileRef.current?.click()} disabled={images.length >= 4}><Camera /><b>拍照或選擇照片</b><small>最多 4 張；送至公司內網 AI，不連外網</small></button>{images.length > 0 && <div className="thumbs">{images.map((src, i) => <div key={i}><img src={src} alt={`照片 ${i + 1}`} /><button onClick={() => setImages((old) => old.filter((_, x) => x !== i))}><Trash2 size={15} /></button></div>)}</div>}<button className="primary" onClick={workerState.state === "idle" || workerState.state === "error" ? () => void loadModel() : () => void analyze()} disabled={workerState.state === "loading" || workerState.state === "analyzing"}>{workerState.state === "loading" || workerState.state === "analyzing" ? <LoaderCircle className="spin" /> : <BrainCircuit />}{workerState.state === "idle" || workerState.state === "error" ? "連線公司內網 AI" : "開始內網 AI 辨識"}</button></section><section className="panel result">{result ? <Result result={result} /> : <Empty state={workerState.state} />}</section></div>}
         {tab === "tracking" && <section className="panel"><div className="panel-head"><div><h2>缺失閉環追蹤</h2><p>資料只保存在目前瀏覽器，共 {issues.length} 項</p></div><button onClick={exportCsv}><Download size={17} />匯出 CSV</button></div><div className="table-wrap"><table><thead><tr><th>風險</th><th>地點／缺失</th><th>改善負責人</th><th>期限</th><th>狀態</th></tr></thead><tbody>{issues.map(({ audit, ...i }) => <tr key={i.id}><td><RiskBadge level={i.riskLevel} /><small>{i.category}</small></td><td><b>{audit.locations.join("、")} · 照片{i.photoIndex}</b><p>{i.description}</p><em>對策：{i.recommendation}</em></td><td><input defaultValue={i.assignee} onBlur={(e) => void updateIssue(audit, i.id, { assignee: e.target.value })} placeholder="指派人員" /></td><td><input type="date" defaultValue={i.dueDate} onChange={(e) => void updateIssue(audit, i.id, { dueDate: e.target.value })} /></td><td><select value={i.status} onChange={(e) => void updateIssue(audit, i.id, { status: e.target.value as IssueStatus })}>{STATUSES.map((x) => <option key={x}>{x}</option>)}</select></td></tr>)}</tbody></table>{!issues.length && <div className="empty-row">尚無缺失紀錄</div>}</div></section>}
-        {tab === "dashboard" && <div className="dashboard"><div className="cards"><Stat icon={ClipboardCheck} label="累計缺失" value={stats.total} /><Stat icon={ShieldCheck} label="未結案" value={stats.open} /><Stat icon={AlertTriangle} label="高風險未結" value={stats.high} danger /><Stat icon={Database} label="本機稽核" value={audits.length} /></div><section className="panel privacy"><BrainCircuit /><div><h3>完全在瀏覽器本機執行</h3><p>網站程式由 GitHub Pages 提供；AI 模型第一次下載後保存在瀏覽器快取。照片與稽核紀錄不會上傳到 GitHub或任何 API。</p></div></section><section className="panel"><div className="panel-head"><div><h2>最近稽核</h2><p>IndexedDB 本機資料</p></div><button className="destructive" onClick={() => void removeAll()}><Trash2 size={17} />清除本機資料</button></div><div className="recent">{audits.map((a) => <article key={a.id}><b>{a.locations.join("、")}</b><span>{a.workflowType}</span><p>{a.summary}</p><small>{formatDate(a.createdAt)} · {a.auditorName} ({a.employeeId}) · {a.images.length} 張</small></article>)}</div></section></div>}
+        {tab === "dashboard" && <div className="dashboard"><div className="cards"><Stat icon={ClipboardCheck} label="累計缺失" value={stats.total} /><Stat icon={ShieldCheck} label="未結案" value={stats.open} /><Stat icon={AlertTriangle} label="高風險未結" value={stats.high} danger /><Stat icon={Database} label="稽核紀錄" value={audits.length} /></div><section className="panel privacy"><BrainCircuit /><div><h3>AI 與資料皆留在公司內網</h3><p>照片只送到公司內部 AI 伺服器；稽核紀錄集中保存在 PostgreSQL，不使用外部 AI API。</p></div></section><section className="panel"><div className="panel-head"><div><h2>最近稽核</h2><p>公司 PostgreSQL 資料庫</p></div><button className="destructive" onClick={() => void removeAll()}><Trash2 size={17} />清除全部資料</button></div><div className="recent">{audits.map((a) => <article key={a.id}><b>{a.locations.join("、")}</b><span>{a.workflowType}</span><p>{a.summary}</p><small>{formatDate(a.createdAt)} · {a.auditorName} ({a.employeeId}) · {a.images.length} 張</small></article>)}</div></section></div>}
       </section>
     </div>
   </main>;
@@ -135,8 +139,8 @@ function normalizeRisk(value: unknown): Risk { const text = String(value || "無
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="field"><b>{label}</b>{children}</label>; }
 function Title({ step, text }: { step: string; text: string }) { return <div className="title"><span>{step}</span><h2>{text}</h2></div>; }
 function RiskBadge({ level }: { level: Risk }) { return <span className={`risk ${level[0]}`}>{level}</span>; }
-function Empty({ state }: { state: WorkerState["state"] }) { return <div className="empty"><BrainCircuit size={42} /><h2>{state === "loading" ? "正在下載本機 AI" : state === "analyzing" ? "正在本機辨識照片" : "尚未建立本次稽核"}</h2><p>第一次需下載模型；完成後模型會保存在瀏覽器快取，照片不會離開這台電腦。</p></div>; }
-function Result({ result }: { result: { overallSummary: string; reports: Report[] } }) { const count = result.reports.flatMap((r) => r.issues).filter((i) => i.description !== "無").length; return <div><div className="success"><CheckCircle2 /><div><h2>本機稽核完成</h2><p>辨識 {count} 項需複核事項</p></div></div><div className="summary"><small>綜合判定</small><p>{result.overallSummary}</p></div>{result.reports.map((r) => <article className="report" key={r.photoIndex}><h3>照片 {r.photoIndex}</h3><p>{r.assessment}</p>{r.issues.filter((i) => i.description !== "無").map((i) => <div className="issue" key={i.category}><div><RiskBadge level={i.riskLevel} /><b>{i.category}</b></div><p>{i.description}</p><em>改善：{i.recommendation}</em><small>依據：{i.standardReference}</small></div>)}</article>)}</div>; }
+function Empty({ state }: { state: WorkerState["state"] }) { return <div className="empty"><BrainCircuit size={42} /><h2>{state === "loading" ? "正在連線公司內網 AI" : state === "analyzing" ? "內網 AI 正在辨識照片" : "尚未建立本次稽核"}</h2><p>模型在公司伺服器執行，照片與稽核資料不會傳到外部服務。</p></div>; }
+function Result({ result }: { result: { overallSummary: string; reports: Report[] } }) { const count = result.reports.flatMap((r) => r.issues).filter((i) => i.description !== "無").length; return <div><div className="success"><CheckCircle2 /><div><h2>內網 AI 稽核完成</h2><p>辨識 {count} 項需複核事項</p></div></div><div className="summary"><small>綜合判定</small><p>{result.overallSummary}</p></div>{result.reports.map((r) => <article className="report" key={r.photoIndex}><h3>照片 {r.photoIndex}</h3><p>{r.assessment}</p>{r.issues.filter((i) => i.description !== "無").map((i) => <div className="issue" key={i.category}><div><RiskBadge level={i.riskLevel} /><b>{i.category}</b></div><p>{i.description}</p><em>改善：{i.recommendation}</em><small>依據：{i.standardReference}</small></div>)}</article>)}</div>; }
 function Stat({ icon: Icon, label, value, danger }: any) { return <div className={`stat-card ${danger ? "danger-card" : ""}`}><Icon /><small>{label}</small><strong>{value}</strong></div>; }
 function today() { return new Date().toISOString().slice(0, 10); }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-TW", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }

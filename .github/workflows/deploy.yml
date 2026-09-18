@@ -1,57 +1,24 @@
-name: Deploy GitHub Pages
-
+name: Verify intranet edition
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
+  verify:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 取得程式碼
-        uses: actions/checkout@v4
-
-      - name: 安裝 pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 10
-
-      - name: 安裝 Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
-      - name: 安裝套件
-        run: pnpm install --frozen-lockfile
-
-      - name: 建置網站
-        run: pnpm build
-
-      - name: 設定 GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: 上傳網站
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-      - name: 部署網站
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: python -m compileall -q server/app
+      - run: docker compose config --quiet
