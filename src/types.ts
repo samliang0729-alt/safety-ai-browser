@@ -1,4 +1,4 @@
-export type Risk = "高風險" | "中風險" | "低風險" | "無";
+export type Risk = "高風險" | "中風險" | "低風險" | "待確認" | "無";
 export type IssueStatus = "已上報" | "已派發" | "整改中" | "待驗證" | "已銷項";
 
 export type Issue = {

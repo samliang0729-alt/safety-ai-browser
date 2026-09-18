@@ -101,7 +101,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="brand"><span>安</span><div><b>安巡智控</b><small>GitHub Pages · 瀏覽器本機 AI · v1.1</small></div></div><div className={`status ${workerState.state}`}><BrainCircuit size={17} />{workerState.message}</div></header>
+    <header><div className="brand"><span>安</span><div><b>安巡智控</b><small>GitHub Pages · 瀏覽器本機 AI · v1.2</small></div></div><div className={`status ${workerState.state}`}><BrainCircuit size={17} />{workerState.message}</div></header>
     {(workerState.state === "loading" || workerState.state === "analyzing") && <div className="progress"><span style={{ width: `${Math.max(4, workerState.progress)}%` }} /></div>}
     <div className="shell">
       <nav>{[["audit", Plus, "建立稽核"], ["tracking", ClipboardCheck, "缺失追蹤"], ["dashboard", BarChart3, "管理看板"]].map(([key, Icon, label]: any) => <button className={tab === key ? "active" : ""} onClick={() => setTab(key)} key={key}><Icon size={18} />{label}</button>)}<div className="nav-stats"><small>未結案</small><strong>{stats.open}</strong><small>逾期</small><strong className="danger">{stats.overdue}</strong></div></nav>
@@ -131,7 +131,7 @@ function normalizeReports(raw: any[]): Report[] {
     }) };
   });
 }
-function normalizeRisk(value: unknown): Risk { const text = String(value || "無"); return text.includes("高") ? "高風險" : text.includes("中") ? "中風險" : text.includes("低") ? "低風險" : "無"; }
+function normalizeRisk(value: unknown): Risk { const text = String(value || "無"); return text.includes("高") ? "高風險" : text.includes("中") ? "中風險" : text.includes("低") ? "低風險" : text.includes("待") ? "待確認" : "無"; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="field"><b>{label}</b>{children}</label>; }
 function Title({ step, text }: { step: string; text: string }) { return <div className="title"><span>{step}</span><h2>{text}</h2></div>; }
 function RiskBadge({ level }: { level: Risk }) { return <span className={`risk ${level[0]}`}>{level}</span>; }
